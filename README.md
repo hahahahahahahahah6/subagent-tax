@@ -10,7 +10,8 @@ subagent even reads your prompt. One measurement put that fixed preamble at
 Bill. Their Output Was 0.9%"*).
 
 `subagent-tax` scans your `~/.claude/projects` transcript history, counts
-every subagent invocation, multiplies by the preamble model, and tells you —
+completed successful subagent invocations, multiplies by the preamble model,
+and tells you —
 in tokens and dollars — which parts of the preamble are worth trimming.
 
 ## Boundary with mcp-tax

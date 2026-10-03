@@ -66,3 +66,46 @@ def test_default_projects_dir_shape():
 def test_iter_transcripts_dedupes():
     f = os.path.join(FIX, "session1.jsonl")
     assert list(iter_transcripts([f, f, FIX])).count(f) == 1
+
+
+def test_iter_transcripts_normalizes_equivalent_paths(tmp_path, monkeypatch):
+    transcript = tmp_path / "one.jsonl"
+    transcript.write_text("")
+    monkeypatch.chdir(tmp_path)
+    paths = list(iter_transcripts(["one.jsonl", str(transcript), "."]))
+    assert paths == [str(transcript.resolve())]
+
+
+def test_only_successful_task_results_are_counted(tmp_path):
+    path = tmp_path / "results.jsonl"
+    rows = [
+        {"type": "assistant", "sessionId": "s", "message": {
+            "role": "assistant", "content": [
+                {"type": "tool_use", "id": "ok", "name": "Task",
+                 "input": {}},
+                {"type": "tool_use", "id": "failed", "name": "Task",
+                 "input": {}},
+                {"type": "tool_use", "id": "pending", "name": "Task",
+                 "input": {}}]}},
+        {"type": "user", "sessionId": "s", "message": {
+            "role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "ok",
+                 "content": "done"},
+                {"type": "tool_result", "tool_use_id": "failed",
+                 "is_error": True, "content": "no"}]}}
+    ]
+    path.write_text("\n".join(__import__("json").dumps(row) for row in rows))
+    calls = find_task_calls(str(path))
+    assert len(calls) == 1
+
+
+def test_missing_session_id_and_container_fields_are_ignored(tmp_path):
+    path = tmp_path / "types.jsonl"
+    row = {"type": "assistant", "message": {"role": "assistant",
+           "content": [{"type": "tool_use", "id": "x", "name": "Task",
+                        "input": {"subagent_type": ["bad"]}}]}}
+    result = {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "x"}]}}
+    path.write_text("\n".join(__import__("json").dumps(x)
+                              for x in (row, result)))
+    assert find_task_calls(str(path)) == []

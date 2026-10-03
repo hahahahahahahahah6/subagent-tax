@@ -37,3 +37,20 @@ def test_cli_bad_set_exits():
 def test_cli_empty_dir(capsys, tmp_path):
     assert main([str(tmp_path)]) == 0
     assert "No Task (subagent) calls found" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("args", [
+    ["--price-input", "-1"], ["--price-input", "nan"],
+    ["--price-input", "inf"], ["--top", "-1"],
+    ["--set", "skills=-1"],
+])
+def test_cli_rejects_invalid_numeric_inputs(args):
+    with pytest.raises(SystemExit):
+        main(args)
+
+
+def test_cli_malformed_mcp_root_is_handled(capsys, tmp_path):
+    report = tmp_path / "report.json"
+    report.write_text("null")
+    assert main(["--mcp-tax-report", str(report)]) == 2
+    assert "expected a list of servers" in capsys.readouterr().err

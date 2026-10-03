@@ -3,3 +3,4 @@
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu2", "name": "Read", "input": {"file_path": "/repo/auth.py"}}]}, "timestamp": "2026-09-20T10:00:06Z", "sessionId": "sess-aaa", "cwd": "/repo"}
 this line is not json and must be skipped
 {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu3", "name": "Task", "input": {"description": "Write tests", "prompt": "Write unit tests for the token refresh logic."}}]}, "timestamp": "2026-09-20T10:01:00Z", "sessionId": "sess-aaa", "cwd": "/repo"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "found it"}, {"type": "tool_result", "tool_use_id": "tu3", "content": "tests written"}]}, "timestamp": "2026-09-20T10:02:00Z", "sessionId": "sess-aaa", "cwd": "/repo"}
