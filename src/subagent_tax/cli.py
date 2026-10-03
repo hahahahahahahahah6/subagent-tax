@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 
 from . import __version__
@@ -26,7 +27,29 @@ def _parse_set(pairs):
         except ValueError:
             raise SystemExit("error: --set %s needs an integer, got %r"
                              % (name, value))
+        if overrides[name] < 0:
+            raise SystemExit("error: --set %s must be non-negative" % name)
     return overrides
+
+
+def _nonnegative_float(value):
+    try:
+        result = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a number")
+    if not math.isfinite(result) or result < 0:
+        raise argparse.ArgumentTypeError("must be non-negative and finite")
+    return result
+
+
+def _nonnegative_int(value):
+    try:
+        result = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an integer")
+    if result < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return result
 
 
 def build_parser():
@@ -53,13 +76,13 @@ def build_parser():
                    help="override a preamble component "
                         "(%s); repeatable" % ", ".join(
                             sorted(DEFAULT_COMPONENTS)))
-    p.add_argument("--price-input", type=float,
+    p.add_argument("--price-input", type=_nonnegative_float,
                    default=DEFAULT_PRICE_INPUT_PER_MTOK, metavar="USD",
                    help="input price USD per MTok (default %.2f; verify "
                         "current published pricing)"
                    % DEFAULT_PRICE_INPUT_PER_MTOK)
     p.add_argument("--format", choices=["text", "json"], default="text")
-    p.add_argument("--top", type=int, default=5,
+    p.add_argument("--top", type=_nonnegative_int, default=5,
                    help="ranked contributions to show (default 5)")
     p.add_argument("--version", action="version",
                    version="subagent-tax " + __version__)

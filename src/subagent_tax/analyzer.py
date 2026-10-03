@@ -56,18 +56,39 @@ def _collapse(text, limit=200):
     return text
 
 
+def _text(value):
+    """Return scalar transcript metadata as text; reject containers."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return ""
+
+
 def find_task_calls(path):
-    """Return a list of TaskCall for every Task tool_use in a transcript."""
-    calls = []
+    """Return Task calls that have a matching successful tool result."""
+    candidates = {}
+    successful_ids = set()
     for obj in _iter_jsonl(path):
         msg = obj.get("message")
         if not isinstance(msg, dict):
             continue
         role = msg.get("role", obj.get("type", ""))
-        if role != "assistant":
-            continue
         content = msg.get("content")
         if not isinstance(content, list):
+            continue
+        if role == "user":
+            for block in content:
+                if (isinstance(block, dict) and
+                        block.get("type") == "tool_result" and
+                        block.get("is_error") is not True):
+                    tool_id = block.get("tool_use_id")
+                    if isinstance(tool_id, str):
+                        successful_ids.add(tool_id)
+            continue
+        if role != "assistant":
             continue
         for block in content:
             if not isinstance(block, dict):
@@ -76,26 +97,33 @@ def find_task_calls(path):
                 continue
             if block.get("name") != "Task":
                 continue
+            tool_id = block.get("id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
             inp = block.get("input") or {}
             if not isinstance(inp, dict):
                 inp = {}
-            calls.append(TaskCall(
-                timestamp=obj.get("timestamp", ""),
-                session_id=obj.get("sessionId", "") or
-                os.path.splitext(os.path.basename(path))[0],
-                cwd=obj.get("cwd", ""),
-                subagent_type=inp.get("subagent_type", "") or "",
-                description=inp.get("description", "") or "",
+            session_id = _text(obj.get("sessionId"))
+            if not session_id:
+                continue
+            candidates[tool_id] = TaskCall(
+                timestamp=_text(obj.get("timestamp")),
+                session_id=session_id,
+                cwd=_text(obj.get("cwd")),
+                subagent_type=_text(inp.get("subagent_type")),
+                description=_text(inp.get("description")),
                 prompt_preview=_collapse(inp.get("prompt", "")),
                 transcript_path=path,
-            ))
-    return calls
+            )
+    return [call for tool_id, call in candidates.items()
+            if tool_id in successful_ids]
 
 
 def iter_transcripts(paths):
     """Yield transcript paths from explicit files and/or directories."""
     seen = set()
     for path in paths:
+        path = os.path.normcase(os.path.realpath(os.path.abspath(path)))
         if os.path.isfile(path) and path.endswith(".jsonl"):
             if path not in seen:
                 seen.add(path)

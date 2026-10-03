@@ -11,7 +11,9 @@ counts. See README "Honest limitations".
 from __future__ import annotations
 
 import json
+import math
 import os
+import warnings
 
 CHARS_PER_TOKEN = 4  #: rough heuristic for English prose / JSON schemas
 
@@ -54,8 +56,23 @@ def _read_text(path):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             return fh.read()
-    except OSError:
-        return ""
+    except OSError as exc:
+        warnings.warn("cannot read metric input %r: %s; ignoring it" %
+                      (path, exc), RuntimeWarning, stacklevel=2)
+        return None
+
+
+def _nonnegative_int(value, field):
+    """Coerce a report value to a finite, non-negative integer."""
+    if isinstance(value, bool):
+        raise ValueError("%s must be a non-negative finite number" % field)
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("%s must be a non-negative finite number" % field)
+    if not math.isfinite(number) or number < 0:
+        raise ValueError("%s must be a non-negative finite number" % field)
+    return int(number)
 
 
 class PreambleModel:
@@ -74,18 +91,21 @@ class PreambleModel:
             if key not in self.components:
                 raise ValueError("unknown component %r (known: %s)"
                                  % (key, ", ".join(sorted(self.components))))
-            self.components[key] = int(value)
+            self.components[key] = _nonnegative_int(value, key)
             self.sources[key] = "override --set"
 
         if claude_md_path:
             text = _read_text(claude_md_path)
-            self.components["claude_md"] = estimate_tokens(text)
-            self.sources["claude_md"] = "measured: %s" % claude_md_path
+            if text is not None:
+                self.components["claude_md"] = estimate_tokens(text)
+                self.sources["claude_md"] = "measured: %s" % claude_md_path
 
         if skills_dir:
-            self.per_skill = _measure_skills(skills_dir)
-            self.components["skills"] = sum(self.per_skill.values())
-            self.sources["skills"] = "measured: %s" % skills_dir
+            measured_skills = _measure_skills(skills_dir)
+            if measured_skills is not None:
+                self.per_skill = measured_skills
+                self.components["skills"] = sum(self.per_skill.values())
+                self.sources["skills"] = "measured: %s" % skills_dir
 
         if mcp_tax_report:
             self.per_mcp_server = _import_mcp_tax(mcp_tax_report)
@@ -105,13 +125,19 @@ class PreambleModel:
 
 def _measure_skills(skills_dir):
     """Map skill name -> heuristic tokens from each SKILL.md found."""
+    if not os.path.isdir(skills_dir):
+        warnings.warn("cannot read metric input %r: not a directory; "
+                      "ignoring it" % skills_dir, RuntimeWarning,
+                      stacklevel=2)
+        return None
     found = {}
     for root, _dirs, files in os.walk(skills_dir):
         for fn in files:
             if fn == "SKILL.md":
                 name = os.path.basename(root)
-                found[name] = estimate_tokens(_read_text(
-                    os.path.join(root, fn)))
+                text = _read_text(os.path.join(root, fn))
+                if text is not None:
+                    found[name] = found.get(name, 0) + estimate_tokens(text)
     return found
 
 
@@ -129,14 +155,29 @@ def _import_mcp_tax(report_path):
         raise ValueError("cannot read mcp-tax report %r: %s"
                          % (report_path, exc))
     if isinstance(rows, dict):  # tolerate {"servers": [...]} wrappers
-        rows = rows.get("servers", [])
+        rows = rows.get("servers")
+    if not isinstance(rows, list):
+        raise ValueError("invalid mcp-tax report %r: expected a list of "
+                         "servers" % report_path)
     out = {}
     for row in rows:
         if not isinstance(row, dict) or not row.get("ok", True):
             continue
         name = row.get("name", "unknown")
+        if not isinstance(name, (str, int, float, bool)):
+            name = "unknown"
+        name = str(name)
         tokens = row.get("est_tokens")
-        if tokens is None:  # fall back to chars/4 like mcp-tax does
-            tokens = estimate_tokens(" " * int(row.get("schema_chars", 0)))
-        out[name] = int(tokens)
+        try:
+            if tokens is None:  # fall back to chars/4 like mcp-tax does
+                chars = _nonnegative_int(row.get("schema_chars", 0),
+                                         "schema_chars")
+                tokens = int(chars / CHARS_PER_TOKEN)
+            else:
+                tokens = _nonnegative_int(tokens, "est_tokens")
+        except ValueError as exc:
+            warnings.warn("ignoring invalid mcp-tax row for %r: %s" %
+                          (name, exc), RuntimeWarning, stacklevel=2)
+            continue
+        out[name] = out.get(name, 0) + tokens
     return out
