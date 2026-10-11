@@ -14,12 +14,46 @@ completed successful subagent invocations, multiplies by the preamble model,
 and tells you —
 in tokens and dollars — which parts of the preamble are worth trimming.
 
+## Billing model: per-turn re-entry (v0.3)
+
+The old model (v0.2 and earlier) billed the preamble **once per `Task()`
+call**: 51K tokens in, done. That undercounts, twice:
+
+1. **Per-turn re-entry.** The fixed preamble is not paid once per call — it
+   re-enters the model context on **every API call (turn)** inside the
+   subagent, the same correction mcp-tax 0.3 made for MCP schemas (thanks to
+   dev.to reader **MCPulse** for pressing on this). A 51K preamble in a
+   3-turn subagent is a 153K tax, not a 51K tax.
+2. **The subagent multiplier.** Every `Task()` call spawns a brand-new
+   context, so the full preamble is re-paid on spawn — a true amplifier.
+   Measured in the wild by dev.to reader **aidiveyt**: 2,631 subagent runs
+   ate **48.1%** of all tokens.
+
+The report now ends with a **per-turn re-entry ledger**: one billing line per
+`subagent_type`, with an explicit `subagent_multiplier` column (how many
+fresh contexts each type spawned), per-call spawn overhead (`--spawn-overhead`,
+default 2,000 heuristic tokens for the Task payload + result handling), and
+per-turn preamble re-injection (`--turns-per-task`, default 3, heuristic —
+parent transcripts don't show a subagent's internal turns).
+
+**Cache TTL miss:** a fresh subagent starts with a cold cache, so the spawn
+turn is always billed at full price even when later turns hit the prompt
+cache (`--cache-hit-rate`, default 0.0). And as in mcp-tax 0.3, caching only
+lowers the *price*, never the window occupancy — the ledger keeps
+`billable_tokens` and `cumulative_window_tokens` as separate columns.
+
+The old spawn-only number is kept in the JSON output as `old_model_tokens`
+so you can see exactly how much it undercounted.
+
 ## Boundary with mcp-tax
 
 `mcp-tax` audits the **total size** of your MCP server schemas (how much
-context one audit costs). `subagent-tax` audits the **repeat cost**: how many
-tokens get **re-sent on every single subagent call** because that preamble is
-fixed. The two compose: run `mcp-tax audit --json > mcp.json`, then feed it to
+context one audit costs) and, since v0.3, bills them **per turn** with a
+per-server ledger. `subagent-tax` shares that exact billing framework but
+focuses on the **subagent side**: the multiplier (every `Task()` re-pays the
+full preamble on spawn), the per-call spawn overhead, and the cache TTL miss
+at spawn — none of which exist in the MCP-server world. The two compose: run
+`mcp-tax audit --json > mcp.json`, then feed it to
 `subagent-tax --mcp-tax-report mcp.json` and the per-server schema costs show
 up as per-call resend costs with per-server trim suggestions.
 
@@ -49,6 +83,9 @@ subagent-tax --mcp-tax-report /tmp/mcp.json
 
 # override any preamble component, set pricing, JSON output
 subagent-tax --set system_prompt=15000 --price-input 3.00 --format json
+
+# tune the corrected billing model
+subagent-tax --turns-per-task 5 --spawn-overhead 1500 --cache-hit-rate 0.5
 ```
 
 Example output:
@@ -79,6 +116,18 @@ Cuttable contributions (tokens per Task call):
 Top trim suggestion:
   Slim down (custom system prompt) system prompt: saves ~20,000 tokens
   per Task call (~$7.92 at 132 observed calls)
+
+Per-turn re-entry ledger (corrected billing model, same framework as mcp-tax 0.3)
+  turns per Task call: 3 (heuristic; --turns-per-task) | spawn overhead: 2,000 tok/call | cache hit rate: 0% (spawn turn always cold)
+
+  subagent_type     calls multiplier per-call tok   window tok billable tok
+  Explore              90         90      155,000   13,950,000   13,950,000
+  Plan                 31         31      155,000    4,805,000    4,805,000
+  (default)            11         11      155,000    1,705,000    1,705,000
+  TOTAL                                                20,460,000   20,460,000  ~= $61.38
+
+  Old model (v0.2, spawn-only) counted 6,732,000 tokens; corrected ledger counts
+  20,460,000 — the old model undercounted by a factor of 3.0x.
 ```
 
 ## The preamble model
@@ -106,6 +155,11 @@ Components and defaults (tokens per `Task` call). The defaults sum to
 - **Transcript coverage is local only.** It counts `Task` tool calls in local
   JSONL transcripts; subagents spawned via the API, deleted transcripts, or
   other harnesses are invisible to it.
+- **Ledger turn counts and spawn overhead are heuristic.** Parent
+  transcripts don't show a subagent's internal turns, so
+  `--turns-per-task` (default 3) is a placeholder: measure or guess yours.
+  `--spawn-overhead` (default 2,000 tokens) likewise approximates the Task
+  payload plus result handling, not exact bytes.
 - **"Waste" is a simplification.** Preamble tokens are genuinely billed, but
   some preamble (e.g. tool schemas the subagent actually uses) is working
   context, not pure waste. Treat the ranking as "where to look first", not a

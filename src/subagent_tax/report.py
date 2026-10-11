@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 
+from . import ledger as _ledger_mod
 from .model import LABELS
 
 
@@ -65,7 +66,10 @@ def trim_suggestion(row, n_calls, price_per_mtok):
                 verb, label, _fmt_int(tok), saved_usd, n_calls))
 
 
-def aggregate(calls, model, price_per_mtok, top=5):
+def aggregate(calls, model, price_per_mtok, top=5,
+              turns_per_call=_ledger_mod.DEFAULT_TURNS_PER_TASK,
+              spawn_overhead=_ledger_mod.DEFAULT_SPAWN_OVERHEAD_TOKENS,
+              cache_hit_rate=0.0):
     n_calls = len(calls)
     per_call = model.total_per_call
     total_tokens = per_call * n_calls
@@ -73,6 +77,12 @@ def aggregate(calls, model, price_per_mtok, top=5):
     rows = rank_contributions(model)
     suggestions = [trim_suggestion(r, n_calls, price_per_mtok)
                    for r in rows[:top] if n_calls and r["tokens_per_call"]]
+    ledger_rows = [{"label": label, "calls": count}
+                   for label, count in sorted(by_type.items())]
+    ledger = _ledger_mod.build_ledger(
+        ledger_rows, per_call, turns_per_call=turns_per_call,
+        spawn_overhead=spawn_overhead, cache_hit_rate=cache_hit_rate,
+        price_per_mtok=price_per_mtok)
     return {
         "n_calls": n_calls,
         "n_sessions": len({c.session_id for c in calls}),
@@ -88,7 +98,45 @@ def aggregate(calls, model, price_per_mtok, top=5):
         ],
         "ranking": rows,
         "suggestions": suggestions,
+        "ledger": ledger,
     }
+
+
+def render_ledger(agg):
+    """Render the per-turn re-entry billing ledger as text lines."""
+    ledger = agg["ledger"]
+    totals = ledger["totals"]
+    L = []
+    L.append("Per-turn re-entry ledger (corrected billing model, "
+             "same framework as mcp-tax 0.3)")
+    L.append("  turns per Task call: %d (heuristic; --turns-per-task) | "
+             "spawn overhead: %s tok/call | cache hit rate: %g%% "
+             "(spawn turn always cold)" % (
+                 ledger["turns_per_call"],
+                 _fmt_int(ledger["spawn_overhead_tokens_per_call"]),
+                 ledger["cache_hit_rate"] * 100))
+    L.append("")
+    L.append("  %-16s %6s %10s %12s %12s %12s" % (
+        "subagent_type", "calls", "multiplier", "per-call tok",
+        "window tok", "billable tok"))
+    for line in ledger["lines"]:
+        L.append("  %-16s %6d %10d %12s %12s %12s" % (
+            line["label"][:16], line["calls"], line["subagent_multiplier"],
+            _fmt_int(line["per_call_window_tokens"]),
+            _fmt_int(line["cumulative_window_tokens"]),
+            _fmt_int(line["billable_tokens"])))
+    L.append("  %-16s %6s %10s %12s %12s %12s  ~= $%.2f" % (
+        "TOTAL", "", "", "",
+        _fmt_int(totals["cumulative_window_tokens"]),
+        _fmt_int(totals["billable_tokens"]), totals["cost_usd"]))
+    L.append("")
+    L.append("  Old model (v0.2, spawn-only) counted %s tokens; corrected "
+             "ledger counts %s —" % (
+                 _fmt_int(totals["old_model_tokens"]),
+                 _fmt_int(totals["cumulative_window_tokens"])))
+    L.append("  the old model undercounted by a factor of %.1fx." % (
+        totals["correction_factor"],))
+    return L
 
 
 def _fmt_int(n):
@@ -129,6 +177,8 @@ def render_text(agg, calls, model, top=5):
         L.append("")
         L.append("Top trim suggestion:")
         L.append("  " + agg["suggestions"][0])
+    L.append("")
+    L.extend(render_ledger(agg))
     L.append("")
     L.append("Note: token counts are heuristic (~4 chars/token), not exact;")
     L.append("see README 'Honest limitations'.")

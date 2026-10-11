@@ -7,6 +7,7 @@ import sys
 
 from . import __version__
 from .analyzer import scan, default_projects_dir
+from .ledger import (DEFAULT_TURNS_PER_TASK, DEFAULT_SPAWN_OVERHEAD_TOKENS)
 from .model import (PreambleModel, DEFAULT_COMPONENTS,
                     DEFAULT_PRICE_INPUT_PER_MTOK)
 from .report import aggregate, render_text, render_json
@@ -84,6 +85,21 @@ def build_parser():
     p.add_argument("--format", choices=["text", "json"], default="text")
     p.add_argument("--top", type=_nonnegative_int, default=5,
                    help="ranked contributions to show (default 5)")
+    p.add_argument("--turns-per-task", type=_nonnegative_int,
+                   default=DEFAULT_TURNS_PER_TASK, metavar="N",
+                   help="heuristic API turns inside each subagent call "
+                        "(default %d; parent transcripts do not show "
+                        "internal turns)" % DEFAULT_TURNS_PER_TASK)
+    p.add_argument("--spawn-overhead", type=_nonnegative_int,
+                   default=DEFAULT_SPAWN_OVERHEAD_TOKENS, metavar="TOKENS",
+                   help="fixed token overhead per Task() call: the Task "
+                        "payload plus result handling (default %d, "
+                        "heuristic)" % DEFAULT_SPAWN_OVERHEAD_TOKENS)
+    p.add_argument("--cache-hit-rate", type=_nonnegative_float, default=0.0,
+                   metavar="F",
+                   help="fraction of later-turn preamble served from prompt "
+                        "cache, 0..1 (default 0.0; the spawn turn is always "
+                        "cache-cold)")
     p.add_argument("--version", action="version",
                    version="subagent-tax " + __version__)
     return p
@@ -104,7 +120,14 @@ def main(argv=None):
     tpaths, calls = scan(args.paths, projects_dir=args.projects_dir)
     if not tpaths:
         print("warning: no transcript files found", file=sys.stderr)
-    agg = aggregate(calls, model, args.price_input, top=args.top)
+    try:
+        agg = aggregate(calls, model, args.price_input, top=args.top,
+                        turns_per_call=args.turns_per_task,
+                        spawn_overhead=args.spawn_overhead,
+                        cache_hit_rate=args.cache_hit_rate)
+    except ValueError as exc:
+        print("error: %s" % exc, file=sys.stderr)
+        return 2
     if args.format == "json":
         sys.stdout.write(render_json(agg))
     else:
